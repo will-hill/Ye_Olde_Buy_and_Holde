@@ -1,0 +1,5 @@
+lightweight-charts
+
+yfinance
+tqdm
+matplotlib
