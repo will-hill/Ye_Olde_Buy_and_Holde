@@ -1,4 +1,5 @@
 lightweight-charts
+seaborn
 
 yfinance
 tqdm
