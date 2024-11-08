@@ -1,146 +1,280 @@
 from lightweight_charts import Chart
-from os.path import exists
-import yfinance as yf
 from time import sleep
-from tqdm import tqdm
 import pandas as pd
 
-TRADING_YR = 252
+from backtester import backtest_strategy, TRADING_YR, update_yfinance_data
+
 METRICS = {"worst_roi": {"column": "roi", "ascending": True},
            "best_roi": {"column": "roi", "ascending": False},
-           "median_roi": {"column": "roi", "ascending": False},
+           "mid_roi": {"column": "roi", "ascending": False},
            "worst_sharpe": {"column": "sharpe", "ascending": True},
            "best_sharpe": {"column": "sharpe", "ascending": False},
-           "median_sharpe": {"column": "sharpe", "ascending": False},
-           "worst_mdd": {"column": "max_drawdown", "ascending": True},
-           "best_mdd": {"column": "max_drawdown", "ascending": False},
-           "median_mdd": {"column": "max_drawdown", "ascending": False},
+           "mid_sharpe": {"column": "sharpe", "ascending": False},
+           "worst_mdd": {"column": "mdd", "ascending": True},
+           "best_mdd": {"column": "mdd", "ascending": False},
+           "mid_mdd": {"column": "mdd", "ascending": False},
            }
+INIT_METRIC = "worst_roi"
 
 
-def backtest_strategy(df: pd.DataFrame):
-    df.loc[:, 'daily_return'] = df['close'].pct_change()
-    df.loc[:, 'cumulative_roi'] = (1 + df['daily_return']).cumprod() - 1
-    df.loc[:, 'rolling_max'] = df['close'].cummax()
-    df.loc[:, 'rolling_max_drawdown'] = ((df['close'] - df['rolling_max']) / df['rolling_max']).cummin()
-    df.loc[:, 'cumulative_sharpe'] = df['daily_return'].expanding().mean() / df['daily_return'].expanding().std()
-    return df
+def clear_chart(chart: Chart):
+    try:
+        chart.clear_markers()
+    except:
+        print("HERE?")
+    try:
+        if hasattr(chart, 'box_obj'):
+            chart.box_obj.delete()
+            del chart.box_obj
+    except:
+        print("HERE?")
 
 
-def run_backtest(ticker: str = None):
-    window_size_addend = 252
-    max_history = TRADING_YR * 10
+def get_results(bt_results: pd.DataFrame, metric: str, ticker: str):
+    bt_results_sorted = bt_results.sort_values(METRICS[metric]['column'],
+                                               ascending=METRICS[metric]['ascending'])
+    metric_row = bt_results_sorted.iloc[0]
+    if metric.split("_")[0] == 'mid':
+        mean_val = bt_results[METRICS[metric]['column']].mean()
+        idx_min = (bt_results[METRICS[metric]['column']] - mean_val).abs().idxmin()
+        metric_row = bt_results.loc[idx_min]
 
-    # 1/29/93 - 10/24/24
-    df = get_yfinance_data(ticker=ticker, use_cache=True).head(max_history)
-    df = df[['adj close']]
-    df = df.rename(columns={'adj close': 'close'})
+    start_date = metric_row['start_date']
+    end_date = metric_row['end_date']
+    del metric_row
+
+    df = update_yfinance_data(ticker=ticker, use_cache=True)
+    df = df.loc[start_date:end_date]
     df = df.reset_index(drop=False)
 
-    backtest_results = []
+    close_col = df.pop("close")
+    df = df.rename(columns={'adj close': 'close'})
+    df = backtest_strategy(df)
 
-    for holding_days in tqdm(range(TRADING_YR, len(df), window_size_addend)):
+    df = df.rename(columns={'close': 'adj close'})
+    df['close'] = close_col
 
-        if holding_days > len(df):
-            continue
+    start_date = start_date.split(" ")[0]
+    start_date = start_date.split("-")[1] + "/" + start_date.split("-")[2] + "/" + start_date.split("-")[0][2:]
 
-        # convolve the backtest_strategy with the holding period
-        for i in range(holding_days, len(df) + 1):
-            window_df = df.iloc[i - holding_days:i].copy()
-            window_df = backtest_strategy(window_df)
-            backtest_results.append({
-                "holding_days": holding_days,
-                "start_date": window_df['date'].iloc[0],
-                "end_date": window_df['date'].iloc[-1],
-                "roi": window_df['cumulative_roi'].iloc[-1],
-                "sharpe": window_df['cumulative_sharpe'].iloc[-1],
-                "max_drawdown": window_df['rolling_max_drawdown'].min()
-            })
-
-    backtest_results_df = pd.DataFrame(backtest_results)
-    backtest_results_df.to_csv(f"{ticker}_backtest_results.csv", index=False)
-    return backtest_results_df
+    return df, start_date, bt_results_sorted
 
 
-def get_yfinance_data(ticker: str = None, use_cache=True):
-    if exists(f"{ticker}.csv") and use_cache:
-        df = pd.read_csv(f"{ticker}.csv", index_col="date")
-        df.index = pd.to_datetime(df.index)
-        return df
+def reinit_chart(chart: Chart, metric: str, start_date, results_df: pd.DataFrame):  # , init_roi, init_mdd, init_sharpe):
+    clear_chart(chart)
 
-    df = yf.download(tickers=[ticker], start=None, end=None)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    df.index = pd.to_datetime(df.index)
-    df.columns = df.columns.str.lower()
-    df.index.name = 'date'
+    init_roi = results_df['cumulative_roi'].iloc[0]
+    init_mdd = results_df['rolling_max_drawdown'].iloc[0]
+    init_sharpe = results_df['cumulative_sharpe'].iloc[0]
 
-    df.to_csv(f"{ticker}.csv", index=True)
+    chart.watermark(f'{chart.ticker.upper()}', color='rgba(180, 180, 240, 0.7)')
 
-    df = pd.read_csv(f"{ticker}.csv", index_col="date")
-    df.index = pd.to_datetime(df.index)
+    chart.topbar['START_END'].set(f'{start_date} - {start_date}')
+    chart.topbar['roi'].set(f'ROI {round(init_roi, 2)}')
+    chart.topbar['mdd'].set(f'MDD {round(init_mdd, 2)}')
+    chart.topbar['sharpe'].set(f'σ {round(init_sharpe, 2)}')
 
-    return df
-
-
-def viz_chart(ticker: str, metric: str, bt_results: pd.DataFrame):
-    worst_roi = bt_results.sort_values(METRICS[metric]['column'], ascending=METRICS[metric]['ascending'])
-    worst_roi_start_date = worst_roi['start_date'].values[0]
-    worst_roi_end_date = worst_roi['end_date'].values[0]
-    del worst_roi
-
-    worst_roi_df = get_yfinance_data(ticker=ticker, use_cache=True)
-    worst_roi_df = worst_roi_df.loc[worst_roi_start_date:worst_roi_end_date]
-
-    worst_roi_df = backtest_strategy(worst_roi_df)
-
-    chart = Chart()
-
-    init_roi = worst_roi_df['cumulative_roi'].iloc[0]
-    init_mdd = worst_roi_df['rolling_max_drawdown'].iloc[0]
-    init_sharpe = worst_roi_df['cumulative_sharpe'].iloc[0]
-
-    chart.watermark(f'SPY - {" ".join(metric.upper().split("_"))}', color='rgba(180, 180, 240, 0.7)')
-
-    worst_roi_start_date = worst_roi_start_date.split(" ")[0]
-    worst_roi_start_date = worst_roi_start_date.split("-")[1] + "/" + worst_roi_start_date.split("-")[2] + "/" + worst_roi_start_date.split("-")[0][2:]
-    chart.topbar.textbox('START', f'START : {worst_roi_start_date}')
-    chart.topbar.textbox('CURR', f'CURR : {worst_roi_start_date}')
-    # number of days
-    chart.topbar.textbox('n_days', f'N DAYS : 1')
-    chart.topbar.textbox('roi', f'ROI : {round(init_roi, 2)}')
-    chart.topbar.textbox('mdd', f'MDD : {round(init_mdd, 2)}')
-    chart.topbar.textbox('sharpe', f'SHARPE : {round(init_sharpe, 2)}')
     chart.legend(visible=True, font_size=14)
 
-    chart.set(worst_roi_df.head(1))
-    worst_roi_df = worst_roi_df.iloc[1:]
+    chart.set(results_df.head(1))
+    # chart.fit()
+    buy_marker = chart.marker(time=results_df.iloc[0]['date'], position='above', shape='arrow_down', color='rgba(0, 255, 0, 0.5)', text='BUY')
+    results_df = results_df.iloc[1:]
+
+    return chart, results_df
+
+
+def zoom_out_event(chart: Chart):
+    clear_chart(chart)
+
+    # GET ALL DATA
+    df = update_yfinance_data(ticker=chart.ticker, use_cache=True)
+    df = df.reset_index(drop=False)
+    close_col = df.pop("close")
+    df = df.rename(columns={'adj close': 'close'})
+    df = backtest_strategy(df)
+    df = df.rename(columns={'close': 'adj close'})
+    df['close'] = close_col
+    chart.set(df=df, keep_drawings=False)
+    chart.fit()
+    results_df = chart.results_df
+    box_obj = chart.box(results_df.iloc[0]['date'], results_df.iloc[0]['open'], results_df.iloc[-1]['date'], results_df.iloc[-1]['close'], color='white', width=4)
+    chart.box_obj = box_obj
+
+
+def init_chart(chart: Chart, ticker: str, metric: str, start_date, results_df: pd.DataFrame):  # , init_roi, init_mdd, init_sharpe):
+
+    init_roi = results_df['cumulative_roi'].iloc[0]
+    init_mdd = results_df['rolling_max_drawdown'].iloc[0]
+    init_sharpe = results_df['cumulative_sharpe'].iloc[0]
+
+    chart.ticker = ticker.upper()
+    chart.topbar.button(name='search', button_text='search', func=search_click_event)
+    chart.topbar.button(name='zoom_out', button_text='zoom out', func=zoom_out_event)
+    chart.topbar.switcher(name='metric_switcher', options=('ROI', 'MDD', 'SHARPE'), default=INIT_METRIC.split("_")[1].upper(), func=metric_choice_event, align='left')
+    chart.topbar.switcher(name='scenario_switcher', options=('WORST', 'MID', 'BEST'), default=INIT_METRIC.split("_")[0].upper(), func=metric_choice_event, align='left')
+    chart.topbar.textbox(name="max_yrs_lbl", initial_text="max yrs:")
+    chart.topbar.switcher(name='max_yrs', options=(1, 2, 3, 5, 10, 15), default='10', func=metric_choice_event, align='left')
+
+    chart.topbar.textbox(name="start_yr_lbl", initial_text="start:")
+    bt_results = pd.read_csv(f"{ticker}_backtest_results.csv")
+    year_options = pd.to_datetime(bt_results.start_date).dt.year.unique()
+    chart.topbar.switcher(name='start_yr', options=(1993, 2010, 2015, 2020, 2023, 2024), default=min(year_options), func=metric_choice_event, align='left')
+    chart.watermark(f'{ticker.upper()}', color='rgba(180, 180, 240, 0.7)')
+
+    chart.topbar.textbox('START_END', f'{start_date} - {start_date}')
+
+    buy_marker = chart.marker(time=start_date, position='above', shape='arrow_down', color='rgba(0, 255, 0, 0.5)', text='BUY')
+
+    chart.topbar.textbox('years', '9')
+
+    chart.topbar.textbox('roi', f'ROI {round(init_roi, 2)}')
+    chart.topbar.textbox('mdd', f'MDD {round(init_mdd, 2)}')
+    chart.topbar.textbox('sharpe', f'σ {round(init_sharpe, 2)}')
+
+    chart.legend(visible=True, font_size=14)
+
+    chart.set(results_df.head(1))
+    # chart.fit()
+    results_df = results_df.iloc[1:]
 
     chart.show(block=False)
 
-    for i, series in worst_roi_df.reset_index().iterrows():
+    return chart, results_df
+
+
+def animate_chart(ticker: str, results_df: pd.DataFrame, metric: str, chart: Chart):
+    for i, series in results_df.reset_index().iterrows():
         chart.update(series)
 
-        chart.topbar['CURR'].set(f'CURR : {series["date"].strftime("%m/%d/%y")}')
-        chart.topbar['n_days'].set(f'N DAYS : {i + 2}')
+        start = chart.topbar['START_END'].value.split(" - ")[0]
+        chart.topbar['START_END'].set(f'{start} - {series["date"].strftime("%m/%d/%y")}')
 
-        chart.topbar['roi'].set(f'ROI : {round(series["cumulative_roi"], 2)}')
-        chart.topbar['mdd'].set(f'MDD : {round(series["rolling_max_drawdown"], 2)}')
-        chart.topbar['sharpe'].set(f'SHARPE : {round(series["cumulative_sharpe"], 2)}')
+        curr_years = (i + 1) / TRADING_YR
+        if curr_years == int(curr_years):
+            chart.topbar['years'].set(f'YRS {int(curr_years)}')
+        else:
+            chart.topbar['years'].set(f'YRS {round(curr_years, 2)}')
 
-        sleep(0.1)
+        roi = round(series["cumulative_roi"], 2)
+        mdd = round(series["rolling_max_drawdown"], 2)
+        sharpe = round(series["cumulative_sharpe"], 2)
+        chart.topbar['roi'].set(f'ROI {int(roi * 100)}%')
+        chart.topbar['mdd'].set(f'MDD {int(mdd * 100)}%')
+        chart.topbar['sharpe'].set(f'σ {sharpe}')
+        # chart.fit()
+        sleep(0.00)
+    color = 'rgba(0, 255, 0, 0.5)'
+    if roi < 0:
+        color = 'red'
+    end_marker = chart.marker(time=series['date'], position='above', shape='arrow_down', color=color, text=f'ROI \n {int(roi * 100)}%')
+
+
+def search_click_event(chart: Chart):
+    # remove marker
+    chart.clear_markers()
+    metric = chart.topbar['scenario_switcher'].value.lower() + "_" + chart.topbar['metric_switcher'].value.lower()
+    max_yrs = int(chart.topbar['max_yrs'].value)
+    start_yr = int(chart.topbar['start_yr'].value)
+
+    ######## RESULTS
+
+    bt_results = pd.read_csv(f"{chart.ticker}_backtest_results.csv")
+
+    # convert start_date to datetime, remove rows where the year in start date is less than start_yr
+    bt_results = bt_results[pd.to_datetime(bt_results['start_date']).dt.year >= start_yr]
+
+    # filter results by max_yrs
+    max_days = int(max_yrs) * TRADING_YR
+    bt_results = bt_results[bt_results['holding_days'] <= max_days]
+    results_df, start_date, bt_results_sorted = get_results(bt_results=bt_results, metric=metric, ticker=chart.ticker)
+    chart.results_df = results_df
+
+    chart, results_df = reinit_chart(chart=chart,
+                                     metric=metric,
+                                     start_date=start_date,
+                                     results_df=results_df)
+
+    ######## ANIMATE
+    animate_chart(ticker=chart.ticker, results_df=results_df, metric=metric, chart=chart)
+
+
+def metric_choice_event(chart: Chart):
+    clear_chart(chart)
+
+    start_yr = int(chart.topbar['start_yr'].value)
+    ######## UPDATE OPTIONS
+    curr_yr = pd.to_datetime('today').year
+    years_passed_from_year_choice = curr_yr - start_yr + 1
+    # update max year choices
+    # chart.topbar['max_yrs'].options = tuple(range(1, years_passed_from_year_choice + 1))
+    # update max year default
+    # chart.topbar['max_yrs'].default = str(years_passed_from_year_choice)
+
+
+def add_table(chart: Chart, bt_results_sorted: pd.DataFrame):
+    def on_row_click(row):
+        row['PL'] = round(row['PL'] + 1, 2)
+        row.background_color('PL', 'green' if row['PL'] > 0 else 'red')
+        backtest_results_table.footer[1] = row['Ticker']
+
+    backtest_results_table = chart.create_table(width=0.3,
+                                                height=0.2,
+                                                headings=('yrs', 'start', 'end', 'roi', 'sharpe', 'mdd'),
+                                                widths=(0.17, 0.17, 0.17, 0.17, 0.16, 0.16),
+                                                alignments=('center', 'center', 'right', 'right', 'right', 'center'),
+                                                position='right',
+                                                func=on_row_click)
+
+    period = bt_results_sorted.pop('holding_days')
+    period = period // 252  # convert period to years integer divide by 252 trading days
+
+    start = bt_results_sorted.pop('start_date')
+    start = pd.to_datetime(start).dt.date
+    end = bt_results_sorted.pop('end_date')
+    end = pd.to_datetime(end).dt.date
+
+    # add period, start, end back to beginning of results_df
+    bt_results_sorted.insert(0, 'yrs', period)
+    bt_results_sorted.insert(1, 'start', start)
+    bt_results_sorted.insert(2, 'end', end)
+
+    for i in range(bt_results_sorted.shape[0]):
+        if i > 80:
+            break
+        backtest_results_table.new_row(*(bt_results_sorted.round(2).iloc[i].values.tolist()))
+    backtest_results_table.footer(2)
+    backtest_results_table.footer[0] = 'Selected:'
+
+
+def viz_chart(ticker: str, metric: str):
+    # INST CHART 16:9
+    chart = Chart(width=1230, height=692,
+                  inner_width=1.0, inner_height=1.0,
+                  x=0, y=0,
+                  title='',
+                  screen=None,
+                  on_top=False,
+                  toolbox=True,
+                  scale_candles_only=False,
+                  position='left')  # maximize=True, debug=False,
+
+    # BT RESULTS
+    bt_results = pd.read_csv(f"{ticker}_backtest_results.csv")
+    results_df, start_date, bt_results_sorted = get_results(bt_results=bt_results, metric=metric, ticker=ticker)
+    chart.results_df = results_df
+
+    # INIT CHART
+    chart, results_df = init_chart(chart=chart, ticker=ticker, metric=metric, start_date=start_date, results_df=results_df)
+
+    # ADD TABLE
+    # add_table(chart=chart, bt_results_sorted=bt_results_sorted)
+
+    # ANIMATE CHART
+    animate_chart(ticker=ticker, results_df=results_df, metric=metric, chart=chart)
 
     chart.show(block=True)
 
 
-def run():
-    ticker = 'SPY'
-    # backtest_results_df = run_backtest(ticker=ticker)
-    backtest_results_df = pd.read_csv(f"{ticker}_backtest_results.csv")
-
-    metric = "worst_roi"
-    viz_chart(ticker=ticker, metric="best_roi", bt_results=backtest_results_df)
-
-
 if __name__ == "__main__":
-    run()
+    viz_chart(ticker='SPY', metric=INIT_METRIC)

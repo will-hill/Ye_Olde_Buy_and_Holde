@@ -1,6 +1,9 @@
 lightweight-charts
-seaborn
+polars
 
 yfinance
 tqdm
 matplotlib
+plotly
+seaborn
+statsmodels
