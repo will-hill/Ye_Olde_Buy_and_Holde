@@ -57,6 +57,7 @@ def run_backtest(ticker: str = None):
             continue
 
         for i in range(holding_days, len(df) + 1):
+
             window_df = df.iloc[i - holding_days:i].copy()
             window_df = backtest_strategy(window_df)
             backtest_results.append({

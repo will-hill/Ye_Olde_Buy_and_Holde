@@ -1,3 +1,4 @@
+pyarrow
 lightweight-charts
 polars
 
