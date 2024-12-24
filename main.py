@@ -31,8 +31,7 @@ def clear_chart(chart: Chart):
 
 
 def get_results(bt_results: pd.DataFrame, metric: str, ticker: str):
-    bt_results_sorted = bt_results.sort_values(METRICS[metric]['column'],
-                                               ascending=METRICS[metric]['ascending'])
+    bt_results_sorted = bt_results.sort_values(METRICS[metric]['column'], ascending=METRICS[metric]['ascending'])
     metric_row = bt_results_sorted.iloc[0]
     if metric.split("_")[0] == 'mid':
         mean_val = bt_results[METRICS[metric]['column']].mean()
@@ -43,7 +42,7 @@ def get_results(bt_results: pd.DataFrame, metric: str, ticker: str):
     end_date = metric_row['end_date']
     del metric_row
 
-    df = update_yfinance_data(ticker=ticker, use_cache=True)
+    df = update_yfinance_data(ticker=ticker, use_cache=False)
     df = df.loc[start_date:end_date]
     df = df.reset_index(drop=False)
 
@@ -119,7 +118,7 @@ def init_chart(chart: Chart, ticker: str, metric: str, start_date, results_df: p
     chart.topbar.textbox(name="start_yr_lbl", initial_text="start:")
     bt_results = pd.read_csv(f"{ticker}_backtest_results.csv")
     year_options = pd.to_datetime(bt_results.start_date).dt.year.unique()
-    chart.topbar.switcher(name='start_yr', options=(1993, 2010, 2015, 2020, 2023, 2024), default=min(year_options), func=metric_choice_event, align='left')
+    chart.topbar.switcher(name='start_yr', options=(1993, 2010, 2015, 2020, 2023), default=min(year_options), func=metric_choice_event, align='left')
     chart.watermark(f'{ticker.upper()}', color='rgba(180, 180, 240, 0.7)')
 
     chart.topbar.textbox('START_END', f'{start_date} - {start_date}')
@@ -144,6 +143,8 @@ def init_chart(chart: Chart, ticker: str, metric: str, start_date, results_df: p
 
 
 def animate_chart(ticker: str, results_df: pd.DataFrame, metric: str, chart: Chart):
+    results_df = results_df.reset_index()
+    results_df['date'] = pd.to_datetime(results_df['date'])
     for i, series in results_df.reset_index().iterrows():
         chart.update(series)
 
@@ -186,7 +187,7 @@ def search_click_event(chart: Chart):
 
     # filter results by max_yrs
     max_days = int(max_yrs) * TRADING_YR
-    bt_results = bt_results[bt_results['holding_days'] <= max_days]
+    bt_results = bt_results[bt_results['win_sz'] <= max_days]
     results_df, start_date, bt_results_sorted = get_results(bt_results=bt_results, metric=metric, ticker=chart.ticker)
     chart.results_df = results_df
 

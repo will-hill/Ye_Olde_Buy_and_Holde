@@ -11,25 +11,34 @@ def update_yfinance_data(ticker: str = None, use_cache: bool = False):
     if not use_cache:
         # get latest data
         df = yf.download(tickers=[ticker], start=None, end=None)
-        # append to existing data
-        df.to_csv(f"{ticker}.csv", index=True, mode='a', header=not exists(f"{ticker}.csv"))
 
-        # dedupe & save
-        df = pd.read_csv(f"{ticker}.csv", index_col="date")
-        df = df.sort_values(by='date')
-        df = df[~df.index.duplicated(keep='first')]
-        df.to_csv(f"{ticker}.csv", index=True, mode='w', header=True)
+        # transform for use
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.index = pd.to_datetime(df.index)
+        df.columns = df.columns.str.lower()
+        df.index.name = 'date'
+        df.index = pd.to_datetime(df.index)
+        df = df.reset_index()
+
+        # append to existing data
+        if exists(f"{ticker}.csv"):
+            # get existing CSV data
+            existing_df = pd.read_csv(f"{ticker}.csv")
+            existing_df['date'] = pd.to_datetime(existing_df['date'])
+
+            # append new data
+            df = pd.concat([existing_df, df])
+
+            # dedupe
+            df = df.sort_values(by='date')
+            df.set_index('date', inplace=True)
+            df = df[~df.index.duplicated(keep='first')]
+
+            # overwrite existing CSV with updated data
+        df.reset_index().to_csv(f"{ticker}.csv", index=False, mode='w', header=True)
 
     df = pd.read_csv(f"{ticker}.csv", index_col="date")
-
-    # transform for use
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    df.index = pd.to_datetime(df.index)
-    df.columns = df.columns.str.lower()
-    df.index.name = 'date'
-    df.index = pd.to_datetime(df.index)
-
     return df
 
 
@@ -57,7 +66,6 @@ def run_backtest(ticker: str = None):
             continue
 
         for i in range(holding_days, len(df) + 1):
-
             window_df = df.iloc[i - holding_days:i].copy()
             window_df = backtest_strategy(window_df)
             backtest_results.append({
